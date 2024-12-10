@@ -30,8 +30,8 @@ using (StringReader reader = new StringReader(input))
 }
 
 // compact
-var checksumArray = firstCompact(diskIds);
-checksumArray = optimizedCompact(diskIds);
+// checksumArray = firstCompact(diskIds);
+var checksumArray = optimizedCompact(diskIds);
 
 var done = false;
 // first checksum
