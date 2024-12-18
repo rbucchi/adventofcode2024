@@ -1,7 +1,9 @@
 ﻿using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Numerics;
 
-var cache = new ConcurrentDictionary<long, IEnumerable<long>>();
+var cache = new ConcurrentDictionary<BigInteger, WeakReference<IEnumerable<BigInteger>>>();
+var evictionList = new LinkedList<BigInteger>();
 const int CACHE_LIMIT = 100000;
 
 const string STONES_DIRECTORY = "Stones";
@@ -21,7 +23,9 @@ for (int i = 0; i < 6; i++)
 }
 if (testStones.Count() != 22 || string.Join(" ", testStones) != "2097446912 14168 4048 2 0 2 4 40 48 2024 40 48 80 96 2 8 6 7 6 0 3 2") throw new Exception("test non passato");
 
+//input = string.Join(" ", File.ReadAllLines(Path.Combine(STONES_DIRECTORY, "46".ToString() + "_" + FILE_PATH)));
 var stones = parseStones(input);
+
 var N_TIMES = 75;
 //var N_TIMES = 6;
 for (int i = 0; i < N_TIMES; i++)
@@ -35,77 +39,87 @@ for (int i = 0; i < N_TIMES; i++)
     //var stone = ReadBlockFromFile();
     //while(stone.Count() > 0)
     //{
-        stones = dostep2(stones);
+    stones = dostep2(stones);
+    //WriteBlockToFile(stones, i);
     //}
     //var tmpStones = ReadBlockFromFile();
     sw.Stop();
     //Console.WriteLine($"blink {i + 1} in {sw.ElapsedMilliseconds}ms: {stones}");
-    Console.WriteLine($"blink {i + 1} ({stones.Count()}) in {sw.ElapsedMilliseconds}ms Memory usage: {GC.GetTotalMemory(false) / 1024 / 1024} MB");
+    Console.WriteLine($"blink {i + 1} ({stones.LongCount()}) in {sw.ElapsedMilliseconds}ms Memory usage: {GC.GetTotalMemory(false) / 1024 / 1024} MB");
     //Console.WriteLine("");
 }
 
-Console.WriteLine("result: \n\n" + stones.Count());
+Console.WriteLine("result: \n\n" + stones.LongCount());
 Console.WriteLine("");
 Console.WriteLine("== END ==");
 
 
-IEnumerable<long> parseStones(string input)
+IEnumerable<BigInteger> parseStones(string input)
 {
-    return input.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(x => long.Parse(x));
+    return input.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(x => BigInteger.Parse(x));
 }
-
-IEnumerable<long> dostep2(IEnumerable<long> stones)
+IEnumerable<BigInteger> dostep2(IEnumerable<BigInteger> stones)
 {
     return stones
         .AsParallel()
-        //.WithDegreeOfParallelism(3)
+        //.WithDegreeOfParallelism(Environment.ProcessorCount / 2)
         .AsOrdered()
         .SelectMany(stone => getOrComputeBlink(stone))
-        .ToList()
         ;
 }
 
-IEnumerable<long> blink(long stone)
+IEnumerable<BigInteger> blink(BigInteger stone)
 {
     if (stone == 0) return [1];
+
     var tmp = stone.ToString();
-    if (tmp.Length % 2 == 0)
+    int len = tmp.Length;
+
+    if (len % 2 == 0)
     {
-        int half = tmp.Length / 2;
-        var part1 = tmp[..half].TrimStart('0');
-        var part2 = tmp[half..].TrimStart('0');
-        return
-        [
-            string.IsNullOrEmpty(part1) ? 0 : long.Parse(part1),
-            string.IsNullOrEmpty(part2) ? 0 : long.Parse(part2)
+        int half = len / 2;
+        var part1 = tmp.Substring(0, half).TrimStart('0');
+        var part2 = tmp.Substring(half).TrimStart('0');
+
+        return [
+            string.IsNullOrEmpty(part1) ? 0 : BigInteger.Parse(part1),
+            string.IsNullOrEmpty(part2) ? 0 : BigInteger.Parse(part2)
         ];
     }
-    return [stone * 2024];
+    return [stone * 2024]; // Nessun problema di overflow con BigInteger
 }
 
-IEnumerable<long> getOrComputeBlink(long stone)
+IEnumerable<BigInteger> getOrComputeBlink(BigInteger stone)
 {
-    if (cache.TryGetValue(stone, out IEnumerable<long> tmp))
-        return tmp;
+    if (cache.TryGetValue(stone, out var weakRef) && weakRef.TryGetTarget(out var cachedResult))
+        return cachedResult;
 
     var result = blink(stone);
 
-    // Limita la dimensione della cache
-    if (cache.Count >= CACHE_LIMIT)
-        cache.TryRemove(cache.First());
+    lock (evictionList)
+    {
+        if (cache.Count >= CACHE_LIMIT)
+        {
+            // Remove the oldest entry
+            var oldestKey = evictionList.First.Value;
+            evictionList.RemoveFirst();
+            cache.TryRemove(oldestKey, out _);
+        }
 
-    cache[stone] = result;
+        cache[stone] = new WeakReference<IEnumerable<BigInteger>>(result);
+        evictionList.AddLast(stone);
+    }
     return result;
 }
 
-string WriteBlockToFile(List<long> block)
+string WriteBlockToFile(IEnumerable<BigInteger> block, int i)
 {
-    string filePath = Path.Combine(STONES_DIRECTORY, FILE_PATH);
+    string filePath = Path.Combine(STONES_DIRECTORY, i.ToString() + "_" + FILE_PATH);
     File.WriteAllLines(filePath, block.Select(x => x.ToString()));
     return filePath;
 }
 
-IEnumerable<long> ReadBlockFromFile()
+IEnumerable<decimal> ReadBlockFromFile()
 {
     string tempFilePath = FILE_PATH + ".tmp";
     string tempFilePath2 = FILE_PATH + "2.tmp";
@@ -137,7 +151,7 @@ IEnumerable<long> ReadBlockFromFile()
             }
         }
     }
-    var res = File.ReadLines(tempFilePath).Select(long.Parse);
+    var res = File.ReadLines(tempFilePath).Select(decimal.Parse);
     File.Delete(tempFilePath);
     File.Delete(FILE_PATH);
     File.Move(tempFilePath2, FILE_PATH);
@@ -150,12 +164,5 @@ void InitializeStonesDirectory()
     {
         Directory.CreateDirectory(STONES_DIRECTORY);
     }
-    else
-    {
-        // Pulisce eventuali file residui
-        foreach (var file in Directory.GetFiles(STONES_DIRECTORY))
-        {
-            File.Delete(file);
-        }
-    }
 }
+
